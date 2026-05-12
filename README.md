@@ -30,3 +30,11 @@ Integração por meio da API
 Exportar como PDF
 
 👨‍💻 Criado com React Native.
+
+1. PRIMEIRA EXECUÇÃO: Admin é criado automaticamente
+   Email: admin@app.com
+   Senha: admin123
+
+2. Na tela de login, clique em "🔧 Login Admin"
+
+3. Gerencie todos os usuários e seus orçamentos!
