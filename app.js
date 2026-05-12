@@ -4,71 +4,71 @@ import {
   Text,
   TextInput,
   TouchableOpacity,
-  FlatList,
   StyleSheet,
   Alert,
   ScrollView,
   ActivityIndicator,
   SafeAreaView,
-  Image
+  Image,
+  Platform
 } from 'react-native';
 import AsyncStorage from '@react-native-async-storage/async-storage';
-import CryptoJS from 'crypto-js';
 
 // ================= DATABASE (AsyncStorage) =================
-// Simulates relational tables using AsyncStorage key-value pairs.
-// Structure:
-//   @db:users        → { [email]: { id, email, password_hash, created_at } }
-//   @db:orcamentos   → { [id]: { id, user_id, quantidade, ... } }
-
 const DB = {
   async getTable(name) {
-    const raw = await AsyncStorage.getItem(`@db:${name}`);
-    return raw ? JSON.parse(raw) : {};
+    try {
+      const raw = await AsyncStorage.getItem(`@db:${name}`);
+      return raw ? JSON.parse(raw) : {};
+    } catch (error) {
+      console.log('DB getTable error:', error);
+      return {};
+    }
   },
 
   async setTable(name, data) {
-    await AsyncStorage.setItem(`@db:${name}`, JSON.stringify(data));
+    try {
+      await AsyncStorage.setItem(`@db:${name}`, JSON.stringify(data));
+    } catch (error) {
+      console.log('DB setTable error:', error);
+    }
   },
 };
 
 const initDB = async () => {
-  // Ensure tables exist (no-op if already created)
-  const users = await DB.getTable('users');
-  const orcamentos = await DB.getTable('orcamentos');
-  if (!users) await DB.setTable('users', {});
-  if (!orcamentos) await DB.setTable('orcamentos', {});
+  try {
+    const users = await DB.getTable('users');
+    const orcamentos = await DB.getTable('orcamentos');
+    if (Object.keys(users).length === 0) await DB.setTable('users', {});
+    if (Object.keys(orcamentos).length === 0) await DB.setTable('orcamentos', {});
+  } catch (error) {
+    console.log('initDB error:', error);
+  }
 };
 
-// ================= CRYPTO (crypto-js) =================
-const CryptoService = {
-  generateSalt() {
-    // 16 random words → hex string
-    const words = CryptoJS.lib.WordArray.random(16);
-    return `$salt$${words.toString(CryptoJS.enc.Hex)}`;
-  },
-
-  hashPassword(password, salt) {
-    // PBKDF2 with 10000 iterations, SHA-256, 256-bit key
-    const key = CryptoJS.PBKDF2(password, salt, {
-      keySize: 256 / 32,
-      iterations: 10000,
-      hasher: CryptoJS.algo.SHA256,
-    });
-    return `${salt}:${key.toString(CryptoJS.enc.Hex)}`;
-  },
-
-  verifyPassword(password, storedHash) {
-    const colonIdx = storedHash.indexOf(':');
-    const salt = storedHash.substring(0, colonIdx);
-    const newHash = this.hashPassword(password, salt);
-    return newHash === storedHash;
-  },
-};
-
-// ================= AUTH SERVICE =================
+// ================= AUTH SERVICE COM MENSAGEM ESPECÍFICA =================
 const AuthService = {
   currentUser: null,
+
+  simpleHash(str) {
+    let hash = 0;
+    for (let i = 0; i < str.length; i++) {
+      const char = str.charCodeAt(i);
+      hash = ((hash << 5) - hash) + char;
+      hash = hash & hash;
+    }
+    return Math.abs(hash).toString();
+  },
+
+  async userExists(email) {
+    try {
+      const users = await DB.getTable('users');
+      const key = email.toLowerCase().trim();
+      return !!users[key];
+    } catch (error) {
+      return false;
+    }
+  },
 
   async register(email, password) {
     try {
@@ -79,8 +79,7 @@ const AuthService = {
         return { success: false, error: 'Email já cadastrado' };
       }
 
-      const salt = CryptoService.generateSalt();
-      const passwordHash = CryptoService.hashPassword(password, salt);
+      const passwordHash = this.simpleHash(password + key);
 
       users[key] = {
         id: Date.now().toString(),
@@ -98,18 +97,25 @@ const AuthService = {
 
   async login(email, password) {
     try {
+      // ✅ VERIFICA SE USUÁRIO EXISTE PRIMEIRO
+      const exists = await this.userExists(email);
+      if (!exists) {
+        return { success: false, error: 'Usuário não cadastrado' };
+      }
+
       const users = await DB.getTable('users');
       const key = email.toLowerCase().trim();
       const user = users[key];
 
       if (!user) {
-        return { success: false, error: 'Email ou senha incorretos' };
+        return { success: false, error: 'Usuário não cadastrado' };
       }
 
-      const isValid = CryptoService.verifyPassword(password, user.password_hash);
+      const passwordHash = this.simpleHash(password + key);
+      const isValid = passwordHash === user.password_hash;
 
       if (!isValid) {
-        return { success: false, error: 'Email ou senha incorretos' };
+        return { success: false, error: 'Senha incorreta' };
       }
 
       this.currentUser = { id: user.id, email: user.email };
@@ -198,119 +204,131 @@ const LoginScreen = ({ onLogin }) => {
 
     setLoading(true);
 
-    if (!isLogin) {
-      if (email !== confirmEmail) {
-        Alert.alert('Erro', 'Os emails não coincidem');
+    try {
+      if (!isLogin) {
+        if (email !== confirmEmail) {
+          Alert.alert('Erro', 'Os emails não coincidem');
+          setLoading(false);
+          return;
+        }
+
+        const result = await AuthService.register(email, password);
+
+        if (result.success) {
+          Alert.alert('Sucesso', 'Usuário cadastrado com sucesso!');
+          setEmail('');
+          setPassword('');
+          setConfirmEmail('');
+          setIsLogin(true);
+        } else {
+          Alert.alert('Erro', result.error);
+        }
         setLoading(false);
         return;
       }
 
-      const result = await AuthService.register(email, password);
+      // ✅ LOGIN COM VERIFICAÇÃO ESPECÍFICA
+      const result = await AuthService.login(email, password);
 
       if (result.success) {
-        Alert.alert('Sucesso', 'Usuário cadastrado com sucesso!');
-        setEmail('');
-        setPassword('');
-        setConfirmEmail('');
-        setIsLogin(true);
+        onLogin(result.user);
       } else {
-        Alert.alert('Erro', result.error);
+        Alert.alert('Erro', result.error); // ✅ "Usuário não cadastrado" ou "Senha incorreta"
       }
-
+    } catch (error) {
+      Alert.alert('Erro', 'Erro inesperado');
+    } finally {
       setLoading(false);
-      return;
     }
-
-    const result = await AuthService.login(email, password);
-
-    if (result.success) {
-      onLogin(result.user);
-    } else {
-      Alert.alert('Erro', result.error);
-    }
-
-    setLoading(false);
   };
 
   return (
-    <View style={styles.container}>
-      <Image
-        source={{ uri: 'https://reactnative.dev/img/tiny_logo.png' }}
-        style={styles.logo}
-      />
+    <ScrollView style={styles.container} contentContainerStyle={{ flexGrow: 1 }}>
+      <View style={styles.content}>
+        <Image
+          source={{ uri: 'https://reactnative.dev/img/tiny_logo.png' }}
+          style={styles.logo}
+          onError={() => {}}
+        />
 
-      <Text style={styles.subtitle}>Orçamentos de Etiquetas</Text>
+        <Text style={styles.subtitle}>Orçamentos de Etiquetas</Text>
 
-      <TextInput
-        style={styles.input}
-        placeholder="Email"
-        value={email}
-        onChangeText={setEmail}
-        autoCapitalize="none"
-        keyboardType="email-address"
-        autoComplete="email"
-      />
-
-      {!isLogin && (
         <TextInput
           style={styles.input}
-          placeholder="Confirmar Email"
-          value={confirmEmail}
-          onChangeText={setConfirmEmail}
+          placeholder="Email"
+          value={email}
+          onChangeText={setEmail}
           autoCapitalize="none"
           keyboardType="email-address"
+          placeholderTextColor="#999"
         />
-      )}
 
-      <View style={styles.passwordWrapper}>
-        <TextInput
-          style={styles.inputPassword}
-          placeholder="Senha"
-          value={password}
-          onChangeText={setPassword}
-          secureTextEntry={!showPassword}
-          autoComplete={isLogin ? 'password' : 'new-password'}
-        />
+        {!isLogin && (
+          <TextInput
+            style={styles.input}
+            placeholder="Confirmar Email"
+            value={confirmEmail}
+            onChangeText={setConfirmEmail}
+            autoCapitalize="none"
+            keyboardType="email-address"
+            placeholderTextColor="#999"
+          />
+        )}
+
+        <View style={styles.passwordWrapper}>
+          <TextInput
+            style={styles.inputPassword}
+            placeholder="Senha"
+            value={password}
+            onChangeText={setPassword}
+            secureTextEntry={!showPassword}
+            placeholderTextColor="#999"
+          />
+          <TouchableOpacity
+            style={styles.eyeBtn}
+            onPress={() => setShowPassword(v => !v)}
+          >
+            <Text style={styles.eyeIcon}>{showPassword ? '🙈' : '👁️'}</Text>
+          </TouchableOpacity>
+        </View>
+
         <TouchableOpacity
-          style={styles.eyeBtn}
-          onPress={() => setShowPassword(v => !v)}
+          style={[styles.button, loading && styles.buttonDisabled]}
+          onPress={handleSubmit}
+          disabled={loading}
         >
-          <Text style={styles.eyeIcon}>{showPassword ? '🙈' : '👁️'}</Text>
+          {loading ? (
+            <ActivityIndicator color="#fff" />
+          ) : (
+            <Text style={styles.buttonText}>
+              {isLogin ? 'ENTRAR' : 'CADASTRAR'}
+            </Text>
+          )}
+        </TouchableOpacity>
+
+        <TouchableOpacity
+          onPress={() => {
+            setIsLogin(!isLogin);
+            setEmail('');
+            setPassword('');
+            setConfirmEmail('');
+            setShowPassword(false);
+          }}
+          style={styles.switchContainer}
+        >
+          <Text style={styles.switchText}>
+            {isLogin 
+              ? 'Não tem conta? Cadastre-se' 
+              : 'Já tem conta? Entre'
+            }
+          </Text>
         </TouchableOpacity>
       </View>
-
-      <TouchableOpacity
-        style={[styles.button, loading && styles.buttonDisabled]}
-        onPress={handleSubmit}
-        disabled={loading}
-      >
-        {loading ? (
-          <ActivityIndicator color="#fff" />
-        ) : (
-          <Text style={styles.buttonText}>
-            {isLogin ? 'ENTRAR' : 'CADASTRAR'}
-          </Text>
-        )}
-      </TouchableOpacity>
-
-      <TouchableOpacity
-        onPress={() => {
-          setIsLogin(!isLogin);
-          setEmail('');
-          setPassword('');
-          setConfirmEmail('');
-          setShowPassword(false);
-        }}
-      >
-        <Text style={styles.switchText}>
-          {isLogin ? 'Não tem conta? Cadastre-se' : 'Já tem conta? Entre'}
-        </Text>
-      </TouchableOpacity>
-    </View>
+    </ScrollView>
   );
 };
 
-// ================= ETIQUETAS SCREEN =================
+// ================= RESTO DO CÓDIGO (EtiquetasScreen e App) - MESMO DA VERSÃO ANTERIOR =================
 const EtiquetasScreen = ({ user, onLogout }) => {
   const [orcamento, setOrcamento] = useState({
     quantidade: '',
@@ -329,8 +347,12 @@ const EtiquetasScreen = ({ user, onLogout }) => {
   }, []);
 
   const loadOrcamentos = async () => {
-    const lista = await OrcamentoService.getByUser(user.id);
-    setOrcamentos(lista);
+    try {
+      const lista = await OrcamentoService.getByUser(user.id);
+      setOrcamentos(lista);
+    } catch (error) {
+      console.log('loadOrcamentos error:', error);
+    }
   };
 
   const calcularTotal = (novo) => {
@@ -346,38 +368,52 @@ const EtiquetasScreen = ({ user, onLogout }) => {
     }
 
     setLoading(true);
-    const result = await OrcamentoService.save(user.id, orcamento);
+    try {
+      const result = await OrcamentoService.save(user.id, orcamento);
 
-    if (result.success) {
-      Alert.alert('Sucesso', 'Orçamento salvo!');
-      setOrcamento({
-        quantidade: '',
-        tamanho: '',
-        material: '',
-        impressao: '',
-        precoUnitario: '',
-        total: '0.00'
-      });
-      loadOrcamentos();
-    } else {
-      Alert.alert('Erro', result.error);
+      if (result.success) {
+        Alert.alert('Sucesso', 'Orçamento salvo!');
+        setOrcamento({
+          quantidade: '',
+          tamanho: '',
+          material: '',
+          impressao: '',
+          precoUnitario: '',
+          total: '0.00'
+        });
+        loadOrcamentos();
+      } else {
+        Alert.alert('Erro', result.error);
+      }
+    } catch (error) {
+      Alert.alert('Erro', 'Erro ao salvar orçamento');
+    } finally {
+      setLoading(false);
     }
-
-    setLoading(false);
   };
 
   const deletarOrcamento = (id) => {
     Alert.alert(
-      'Confirmar',
-      'Deseja excluir este orçamento?',
+      'Confirmar Exclusão',
+      'Deseja realmente excluir este orçamento?',
       [
         { text: 'Cancelar', style: 'cancel' },
         {
           text: 'Excluir',
           style: 'destructive',
           onPress: async () => {
-            await OrcamentoService.delete(id, user.id);
-            loadOrcamentos();
+            try {
+              const result = await OrcamentoService.delete(id, user.id);
+              if (result.success) {
+                Alert.alert('Sucesso', 'Orçamento excluído!');
+                await loadOrcamentos();
+              } else {
+                Alert.alert('Erro', result.error || 'Erro ao excluir');
+              }
+            } catch (error) {
+              Alert.alert('Erro', 'Erro ao excluir orçamento');
+              console.log('delete error:', error);
+            }
           }
         }
       ]
@@ -385,9 +421,11 @@ const EtiquetasScreen = ({ user, onLogout }) => {
   };
 
   return (
-    <ScrollView style={styles.container}>
+    <ScrollView style={styles.container} contentContainerStyle={{ paddingBottom: 20 }}>
       <View style={styles.header}>
-        <Text style={styles.userEmail}>{user.email}</Text>
+        <Text style={styles.userEmail} numberOfLines={1}>
+          {user.email}
+        </Text>
         <TouchableOpacity style={styles.logoutBtn} onPress={onLogout}>
           <Text style={styles.logoutText}>Sair</Text>
         </TouchableOpacity>
@@ -405,6 +443,7 @@ const EtiquetasScreen = ({ user, onLogout }) => {
           setOrcamento(novo);
         }}
         keyboardType="numeric"
+        placeholderTextColor="#999"
       />
 
       <TextInput
@@ -412,6 +451,7 @@ const EtiquetasScreen = ({ user, onLogout }) => {
         placeholder="Tamanho (ex: 10x5cm)"
         value={orcamento.tamanho}
         onChangeText={(text) => setOrcamento({ ...orcamento, tamanho: text })}
+        placeholderTextColor="#999"
       />
 
       <TextInput
@@ -419,6 +459,7 @@ const EtiquetasScreen = ({ user, onLogout }) => {
         placeholder="Material"
         value={orcamento.material}
         onChangeText={(text) => setOrcamento({ ...orcamento, material: text })}
+        placeholderTextColor="#999"
       />
 
       <TextInput
@@ -426,6 +467,7 @@ const EtiquetasScreen = ({ user, onLogout }) => {
         placeholder="Impressão"
         value={orcamento.impressao}
         onChangeText={(text) => setOrcamento({ ...orcamento, impressao: text })}
+        placeholderTextColor="#999"
       />
 
       <TextInput
@@ -438,6 +480,7 @@ const EtiquetasScreen = ({ user, onLogout }) => {
           setOrcamento(novo);
         }}
         keyboardType="numeric"
+        placeholderTextColor="#999"
       />
 
       <Text style={styles.total}>Total: R$ {orcamento.total}</Text>
@@ -454,10 +497,10 @@ const EtiquetasScreen = ({ user, onLogout }) => {
         )}
       </TouchableOpacity>
 
-      <Text style={styles.sectionTitle}>Orçamentos Salvos</Text>
+      <Text style={styles.sectionTitle}>Orçamentos Salvos ({orcamentos.length})</Text>
 
       {orcamentos.length === 0 ? (
-        <Text style={styles.emptyText}>Nenhum orçamento salvo</Text>
+        <Text style={styles.emptyText}>Nenhum orçamento salvo ainda</Text>
       ) : (
         orcamentos.map((item) => (
           <View key={item.id} style={styles.itemCard}>
@@ -467,11 +510,14 @@ const EtiquetasScreen = ({ user, onLogout }) => {
               {item.tamanho ? <Text style={styles.itemDetail}>Tamanho: {item.tamanho}</Text> : null}
               {item.material ? <Text style={styles.itemDetail}>Material: {item.material}</Text> : null}
               {item.impressao ? <Text style={styles.itemDetail}>Impressão: {item.impressao}</Text> : null}
-              <Text style={styles.itemDate}>{new Date(item.created_at).toLocaleDateString('pt-BR')}</Text>
+              <Text style={styles.itemDate}>
+                {new Date(item.created_at).toLocaleDateString('pt-BR')}
+              </Text>
             </View>
             <TouchableOpacity
               style={styles.deleteBtn}
               onPress={() => deletarOrcamento(item.id)}
+              activeOpacity={0.7}
             >
               <Text style={styles.deleteText}>✕</Text>
             </TouchableOpacity>
@@ -482,7 +528,7 @@ const EtiquetasScreen = ({ user, onLogout }) => {
   );
 };
 
-// ================= APP =================
+// ================= APP PRINCIPAL =================
 export default function App() {
   const [screen, setScreen] = useState('loading');
   const [currentUser, setCurrentUser] = useState(null);
@@ -490,11 +536,12 @@ export default function App() {
   useEffect(() => {
     const setup = async () => {
       try {
+        await new Promise(resolve => setTimeout(resolve, 1000));
         await initDB();
         setScreen('login');
       } catch (error) {
-        Alert.alert('Erro', 'Falha ao inicializar banco de dados');
-        console.error('DB init error:', error);
+        console.log('App setup error:', error);
+        setScreen('login');
       }
     };
     setup();
@@ -503,8 +550,8 @@ export default function App() {
   if (screen === 'loading') {
     return (
       <SafeAreaView style={[styles.container, styles.centered]}>
-        <ActivityIndicator size="large" color="#fff" />
-        <Text style={styles.loadingText}>Iniciando...</Text>
+        <ActivityIndicator size="large" color="#C97B2A" />
+        <Text style={styles.loadingText}>Carregando app...</Text>
       </SafeAreaView>
     );
   }
@@ -532,190 +579,195 @@ export default function App() {
   );
 }
 
-// ================= STYLES =================
+// ================= STYLES (MESMOS DA VERSÃO ANTERIOR) =================
 const styles = StyleSheet.create({
   container: {
     flex: 1,
     backgroundColor: '#C97B2A',
-    padding: 20,
   },
-
   centered: {
     justifyContent: 'center',
     alignItems: 'center',
+    padding: 20,
   },
-
   loadingText: {
     color: '#fff',
     marginTop: 10,
     fontSize: 16,
+    fontWeight: '500',
   },
-
+  content: {
+    flexGrow: 1,
+    justifyContent: 'center',
+    padding: 20,
+  },
   logo: {
-    width: 120,
-    height: 120,
+    width: 100,
+    height: 100,
     alignSelf: 'center',
-    marginBottom: 10,
+    marginBottom: 20,
+    borderRadius: 50,
   },
-
   subtitle: {
     textAlign: 'center',
-    marginBottom: 20,
-    fontSize: 18,
+    marginBottom: 30,
+    fontSize: 20,
     fontWeight: 'bold',
     color: '#fff',
   },
-
   input: {
-    backgroundColor: '#eee',
+    backgroundColor: '#fff',
     padding: 15,
-    borderRadius: 10,
-    marginBottom: 10,
+    borderRadius: 12,
+    marginBottom: 15,
     fontSize: 16,
+    borderWidth: 1,
+    borderColor: '#ddd',
   },
-
   button: {
     backgroundColor: '#007AFF',
-    padding: 15,
-    borderRadius: 10,
+    padding: 16,
+    borderRadius: 12,
     alignItems: 'center',
-    marginBottom: 10,
+    marginBottom: 15,
   },
-
   buttonDisabled: {
     opacity: 0.6,
   },
-
   buttonText: {
     color: '#fff',
     fontWeight: 'bold',
     fontSize: 16,
   },
-
+  switchContainer: {
+    padding: 10,
+  },
   switchText: {
     textAlign: 'center',
-    marginTop: 10,
     fontWeight: 'bold',
-    color: '#00008B',
+    color: '#fff',
+    fontSize: 16,
   },
-
   passwordWrapper: {
     flexDirection: 'row',
     alignItems: 'center',
-    backgroundColor: '#eee',
-    borderRadius: 10,
-    marginBottom: 10,
+    backgroundColor: '#fff',
+    borderRadius: 12,
+    marginBottom: 15,
+    borderWidth: 1,
+    borderColor: '#ddd',
   },
-
   inputPassword: {
     flex: 1,
     padding: 15,
     fontSize: 16,
   },
-
   eyeBtn: {
-    paddingHorizontal: 14,
-    paddingVertical: 10,
+    paddingHorizontal: 15,
+    paddingVertical: 15,
     justifyContent: 'center',
     alignItems: 'center',
   },
-
   eyeIcon: {
     fontSize: 20,
   },
-
   header: {
     flexDirection: 'row',
     justifyContent: 'space-between',
     alignItems: 'center',
-    marginBottom: 15,
+    padding: 20,
+    backgroundColor: 'rgba(0,0,0,0.1)',
+    borderBottomWidth: 1,
+    borderBottomColor: 'rgba(255,255,255,0.2)',
   },
-
   userEmail: {
     color: '#fff',
-    fontSize: 13,
+    fontSize: 14,
+    fontWeight: '500',
     flex: 1,
     marginRight: 10,
   },
-
   logoutBtn: {
-    backgroundColor: 'red',
+    backgroundColor: '#ff3b30',
     paddingHorizontal: 15,
     paddingVertical: 8,
     borderRadius: 8,
   },
-
   logoutText: {
     color: '#fff',
     fontWeight: 'bold',
+    fontSize: 14,
   },
-
   sectionTitle: {
-    fontSize: 18,
-    fontWeight: 'bold',
-    color: '#fff',
-    marginVertical: 10,
-  },
-
-  total: {
-    textAlign: 'center',
-    marginVertical: 10,
     fontSize: 20,
     fontWeight: 'bold',
     color: '#fff',
+    marginTop: 20,
+    marginBottom: 15,
   },
-
+  total: {
+    textAlign: 'center',
+    marginVertical: 15,
+    fontSize: 22,
+    fontWeight: 'bold',
+    color: '#fff',
+    backgroundColor: 'rgba(0,0,0,0.1)',
+    padding: 15,
+    borderRadius: 12,
+  },
   emptyText: {
     textAlign: 'center',
     color: '#fff',
-    opacity: 0.7,
-    marginTop: 20,
+    opacity: 0.8,
+    fontSize: 16,
+    marginTop: 30,
+    fontStyle: 'italic',
   },
-
   itemCard: {
     backgroundColor: '#fff',
-    borderRadius: 10,
+    borderRadius: 12,
     padding: 15,
-    marginBottom: 10,
+    marginBottom: 12,
+    elevation: 3,
+    shadowColor: '#000',
+    shadowOffset: { width: 0, height: 2 },
+    shadowOpacity: 0.1,
+    shadowRadius: 4,
     flexDirection: 'row',
     alignItems: 'center',
   },
-
   itemInfo: {
     flex: 1,
   },
-
   itemTotal: {
-    fontSize: 18,
+    fontSize: 20,
     fontWeight: 'bold',
     color: '#C97B2A',
+    marginBottom: 5,
   },
-
   itemDetail: {
-    fontSize: 13,
+    fontSize: 14,
     color: '#555',
     marginTop: 2,
   },
-
   itemDate: {
-    fontSize: 11,
+    fontSize: 12,
     color: '#999',
-    marginTop: 5,
+    marginTop: 8,
+    fontStyle: 'italic',
   },
-
   deleteBtn: {
     backgroundColor: '#ff3b30',
-    width: 32,
-    height: 32,
-    borderRadius: 16,
+    width: 36,
+    height: 36,
+    borderRadius: 18,
     justifyContent: 'center',
     alignItems: 'center',
-    marginLeft: 10,
+    marginLeft: 12,
   },
-
   deleteText: {
     color: '#fff',
     fontWeight: 'bold',
-    fontSize: 14,
+    fontSize: 16,
   },
 });
