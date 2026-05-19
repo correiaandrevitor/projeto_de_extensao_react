@@ -1,143 +1,966 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect } from "react";
+
 import {
   View,
   Text,
   TextInput,
   TouchableOpacity,
+  FlatList,
   StyleSheet,
   Alert,
-  FlatList,
   ActivityIndicator,
   SafeAreaView,
+  Linking,
   ScrollView,
-} from 'react-native';
-import AsyncStorage from '@react-native-async-storage/async-storage';
+  KeyboardAvoidingView,
+  Platform,
+  useWindowDimensions
+} from "react-native";
+
+import AsyncStorage from "@react-native-async-storage/async-storage";
+
+
+// ================= HASH =================
+
+const SECRET="@MinhaChave123";
+
+function hash(text){
+
+let h=0;
+
+const str=text+SECRET;
+
+for(let i=0;i<str.length;i++){
+
+h=((h<<5)-h)+str.charCodeAt(i);
+
+h|=0;
+
+}
+
+return Math.abs(h).toString();
+
+}
+
+
+// ================= DATABASE =================
 
 const DB={
- async get(name){
-   try{
-     const data=await AsyncStorage.getItem(name);
-     return data?JSON.parse(data):{};
-   }catch{return {}}
- },
- async save(name,data){
-   await AsyncStorage.setItem(name,JSON.stringify(data));
- }
+
+async get(key){
+
+try{
+
+const value=
+await AsyncStorage.getItem(key);
+
+return value
+?JSON.parse(value)
+:[];
+
+}catch{
+
+return[];
+
 }
 
-async function initDB(){
- const users=await DB.get('@users');
- const orc=await DB.get('@orc');
- const feedback=await DB.get('@feedbacks');
- if(!Object.keys(users).length) await DB.save('@users',{});
- if(!Object.keys(orc).length) await DB.save('@orc',{});
- if(!Object.keys(feedback).length) await DB.save('@feedbacks',{});
+},
+
+async save(key,data){
+
+await AsyncStorage.setItem(
+key,
+JSON.stringify(data)
+);
+
 }
 
-const AuthService={
- currentUser:null,
- hash(str){
- let h=0;
- for(let i=0;i<str.length;i++){
- h=((h<<5)-h)+str.charCodeAt(i);h|=0;
- }
- return h.toString();
- },
- async register(email,password){
- const users=await DB.get('@users');
- const key=email.toLowerCase().trim();
- if(users[key]) return {success:false,error:'Email já cadastrado'};
- users[key]={id:Date.now().toString(),email:key,password:this.hash(password+key)};
- await DB.save('@users',users);
- return {success:true};
- },
- async login(email,password){
- const users=await DB.get('@users');
- const key=email.toLowerCase().trim();
- const user=users[key];
- if(!user) return {success:false,error:'Usuário não cadastrado'};
- if(this.hash(password+key)!==user.password) return {success:false,error:'Senha incorreta'};
- await AsyncStorage.setItem('@session',JSON.stringify(user));
- return {success:true,user};
- },
- async restore(){
- const data=await AsyncStorage.getItem('@session');
- return data?JSON.parse(data):null;
- },
- async logout(){await AsyncStorage.removeItem('@session')}
+};
+
+
+// ================= AUTH =================
+
+const Auth={
+
+async register(email,password){
+
+let users=
+await DB.get("users");
+
+const exists=
+users.find(
+u=>u.email===email
+);
+
+if(exists){
+
+throw Error();
+
 }
 
-const OrcamentoService={
- async save(userId,data){
- const db=await DB.get('@orc');
- const id=Date.now().toString();
- db[id]={id,user_id:userId,...data};
- await DB.save('@orc',db);
- },
- async get(userId){
- const db=await DB.get('@orc');
- return Object.values(db).filter(i=>i.user_id===userId)
- },
- async remove(id){
- const db=await DB.get('@orc');
- delete db[id];
- await DB.save('@orc',db);
- }
+users.push({
+
+id:Date.now(),
+
+email,
+
+password:
+hash(password)
+
+});
+
+await DB.save(
+"users",
+users
+);
+
+},
+
+async login(email,password){
+
+let users=
+await DB.get("users");
+
+const user=
+users.find(
+
+u=>
+
+u.email===email &&
+
+u.password===
+hash(password)
+
+);
+
+return !!user;
+
 }
+
+};
+
+
+// ================= ORÇAMENTO =================
+
+const Orcamento={
+
+async save(item){
+
+let lista=
+await DB.get(
+"orcamentos"
+);
+
+lista.unshift({
+
+id:Date.now(),
+
+...item
+
+});
+
+await DB.save(
+"orcamentos",
+lista
+);
+
+},
+
+async list(){
+
+return await DB.get(
+"orcamentos"
+);
+
+}
+
+};
+
+
+// ================= LOGIN =================
 
 function LoginScreen({onLogin}){
-const[email,setEmail]=useState('');
-const[confirmEmail,setConfirmEmail]=useState('');
-const[password,setPassword]=useState('');
-const[isLogin,setIsLogin]=useState(true);
 
-async function submit(){
-if(!email||!password)return Alert.alert('Erro','Preencha tudo');
+const {width}=useWindowDimensions();
+
+const[email,setEmail]=
+useState("");
+
+const[password,setPassword]=
+useState("");
+
+const[confirm,setConfirm]=
+useState("");
+
+const[isLogin,setIsLogin]=
+useState(true);
+
+const[loading,setLoading]=
+useState(false);
+
+
+async function handle(){
+
+if(!email||!password){
+
+Alert.alert(
+"Erro",
+"Preencha todos os campos"
+);
+
+return;
+
+}
+
+setLoading(true);
+
+
 if(!isLogin){
-if(email!==confirmEmail)return Alert.alert('Erro','Emails diferentes');
-const r=await AuthService.register(email,password);
-return r.success?setIsLogin(true):Alert.alert('Erro',r.error);
-}
-const r=await AuthService.login(email,password);
-r.success?onLogin(r.user):Alert.alert('Erro',r.error);
-}
-return <ScrollView style={styles.container} contentContainerStyle={styles.center}><Text style={styles.title}>Orçamentos</Text><TextInput style={styles.input} placeholder='Email' value={email} onChangeText={setEmail}/>{!isLogin&&<TextInput style={styles.input} placeholder='Confirmar Email' value={confirmEmail} onChangeText={setConfirmEmail}/>}<TextInput style={styles.input} placeholder='Senha' secureTextEntry value={password} onChangeText={setPassword}/><TouchableOpacity style={styles.button} onPress={submit}><Text style={styles.buttonText}>{isLogin?'ENTRAR':'CADASTRAR'}</Text></TouchableOpacity><TouchableOpacity onPress={()=>setIsLogin(!isLogin)}><Text style={styles.link}>{isLogin?'Não possui conta?':'Já possui conta?'}</Text></TouchableOpacity></ScrollView>
+
+if(password!==confirm){
+
+Alert.alert(
+"Erro",
+"As senhas são diferentes"
+);
+
+setLoading(false);
+
+return;
+
 }
 
-function FeedbackScreen({user,voltar}){
-const[mensagem,setMensagem]=useState('');
-async function enviar(){
-if(!mensagem.trim()) return Alert.alert('Erro','Digite algo');
-const feedbacks=await DB.get('@feedbacks');
-feedbacks[Date.now()]={user:user.email,mensagem};
-await DB.save('@feedbacks',feedbacks);
-Alert.alert('Sucesso','Feedback enviado');
-setMensagem('');
-}
-return <View style={styles.container}><View style={styles.header}><TouchableOpacity style={styles.logout} onPress={voltar}><Text style={{color:'#fff'}}>Voltar</Text></TouchableOpacity></View><View style={{padding:20}}><Text style={styles.title}>Feedback</Text><TextInput multiline value={mensagem} onChangeText={setMensagem} style={styles.feedbackInput} placeholder='Digite sua opinião'/><TouchableOpacity style={styles.button} onPress={enviar}><Text style={styles.buttonText}>Enviar Feedback</Text></TouchableOpacity></View></View>
+try{
+
+await Auth.register(
+email,
+password
+);
+
+Alert.alert(
+"Sucesso",
+"Conta criada"
+);
+
+setEmail("");
+setPassword("");
+setConfirm("");
+setIsLogin(true);
+
+}catch{
+
+Alert.alert(
+"Erro",
+"Usuário já existe"
+);
+
 }
 
-function Home({user,logout,abrirFeedback}){
-const[lista,setLista]=useState([])
-const[orc,setOrc]=useState({quantidade:'',preco:'',material:''})
-useEffect(()=>{carregar()},[])
-async function carregar(){setLista(await OrcamentoService.get(user.id))}
-const total=()=>((parseFloat(orc.quantidade)||0)*(parseFloat(String(orc.preco).replace(',','.'))||0)).toFixed(2)
-async function salvar(){await OrcamentoService.save(user.id,{...orc,total:total()});setOrc({quantidade:'',preco:'',material:''});carregar()}
-return <View style={styles.container}><View style={styles.header}><Text style={styles.email}>{user.email}</Text><TouchableOpacity style={styles.logout} onPress={logout}><Text style={{color:'#fff'}}>Sair</Text></TouchableOpacity></View><View style={{padding:20}}><TextInput style={styles.input} placeholder='Quantidade' value={orc.quantidade} onChangeText={t=>setOrc({...orc,quantidade:t})}/><TextInput style={styles.input} placeholder='Preço' value={orc.preco} onChangeText={t=>setOrc({...orc,preco:t})}/><TextInput style={styles.input} placeholder='Material' value={orc.material} onChangeText={t=>setOrc({...orc,material:t})}/><Text style={styles.total}>R$ {total()}</Text><TouchableOpacity style={styles.button} onPress={salvar}><Text style={styles.buttonText}>Salvar</Text></TouchableOpacity><TouchableOpacity style={styles.button} onPress={abrirFeedback}><Text style={styles.buttonText}>Feedback</Text></TouchableOpacity></View><FlatList data={lista} keyExtractor={i=>i.id} renderItem={({item})=><View style={styles.card}><View><Text style={styles.valor}>R$ {item.total}</Text><Text>Qtd: {item.quantidade}</Text><Text>Material: {item.material}</Text></View><TouchableOpacity style={styles.delete} onPress={async()=>{await OrcamentoService.remove(item.id);carregar()}}><Text style={{color:'#fff'}}>X</Text></TouchableOpacity></View>}/></View>
+setLoading(false);
+
+return;
+
 }
+
+
+const ok=
+await Auth.login(
+email,
+password
+);
+
+setLoading(false);
+
+
+if(ok){
+
+onLogin();
+
+}else{
+
+Alert.alert(
+"Erro",
+"Login inválido"
+);
+
+}
+
+}
+
+
+return(
+
+<KeyboardAvoidingView
+
+style={styles.flex}
+
+behavior={
+Platform.OS==="ios"
+?"padding"
+:"height"
+}
+
+>
+
+<ScrollView
+
+contentContainerStyle={{
+
+flexGrow:1,
+
+justifyContent:"center",
+
+padding:
+width<400
+?20
+:30
+
+}}
+
+keyboardShouldPersistTaps="handled"
+
+style={styles.container}
+
+>
+
+<Text style={styles.title}>
+Etiquetas
+</Text>
+
+
+<TextInput
+style={styles.input}
+placeholder="Email"
+autoCapitalize="none"
+value={email}
+onChangeText={setEmail}
+/>
+
+
+<TextInput
+style={styles.input}
+placeholder="Senha"
+secureTextEntry
+value={password}
+onChangeText={setPassword}
+/>
+
+
+{
+!isLogin&&(
+
+<TextInput
+style={styles.input}
+placeholder="Confirmar senha"
+secureTextEntry
+value={confirm}
+onChangeText={setConfirm}
+/>
+
+)
+}
+
+
+<TouchableOpacity
+style={styles.button}
+onPress={handle}
+>
+
+{
+loading
+
+?
+
+<ActivityIndicator
+color="#fff"
+/>
+
+:
+
+<Text style={styles.btnText}>
+{
+isLogin
+?"ENTRAR"
+:"CADASTRAR"
+}
+</Text>
+
+}
+
+</TouchableOpacity>
+
+
+<TouchableOpacity
+onPress={()=>
+setIsLogin(
+!isLogin
+)
+}
+>
+
+<Text style={styles.link}>
+{
+isLogin
+?"Criar conta"
+:"Já tenho conta"
+}
+</Text>
+
+</TouchableOpacity>
+
+</ScrollView>
+
+</KeyboardAvoidingView>
+
+)
+
+}
+
+
+
+// ================= HOME =================
+
+function Home({onLogout}){
+
+const {width}=useWindowDimensions();
+
+const[qtd,setQtd]=
+useState("");
+
+const[preco,setPreco]=
+useState("");
+
+const[tamanho,setTamanho]=
+useState("");
+
+const[material,setMaterial]=
+useState("");
+
+const[impressao,setImpressao]=
+useState("");
+
+const[obs,setObs]=
+useState("");
+
+const[list,setList]=
+useState([]);
+
+
+useEffect(()=>{
+
+load();
+
+},[]);
+
+
+async function load(){
+
+const dados=
+await Orcamento.list();
+
+setList(dados);
+
+}
+
+
+const total=(
+
+(+qtd||0)
+*
+(+preco||0)
+
+).toFixed(2);
+
+
+
+async function salvar(){
+
+if(!qtd||!preco){
+
+Alert.alert(
+"Erro",
+"Preencha quantidade e preço"
+);
+
+return;
+
+}
+
+await Orcamento.save({
+
+quantidade:qtd,
+
+precoUnitario:preco,
+
+tamanho,
+
+material,
+
+impressao,
+
+obs,
+
+total
+
+});
+
+
+setQtd("");
+setPreco("");
+setTamanho("");
+setMaterial("");
+setImpressao("");
+setObs("");
+
+load();
+
+}
+
+
+
+async function remover(id){
+
+let lista=
+await Orcamento.list();
+
+lista=
+lista.filter(
+i=>i.id!==id
+);
+
+await DB.save(
+"orcamentos",
+lista
+);
+
+load();
+
+}
+
+
+function whatsapp(item){
+
+const msg=
+
+`*ORÇAMENTO DE ETIQUETA*
+
+Quantidade:
+${item.quantidade}
+
+Preço:
+R$ ${item.precoUnitario}
+
+Tamanho:
+${item.tamanho}
+
+Material:
+${item.material}
+
+Impressão:
+${item.impressao}
+
+Observação:
+${item.obs}
+
+TOTAL:
+R$ ${item.total}`;
+
+Linking.openURL(
+
+`https://wa.me/?text=${
+encodeURIComponent(msg)
+}`
+
+);
+
+}
+
+
+return(
+
+<KeyboardAvoidingView
+style={styles.flex}
+behavior={
+Platform.OS==="ios"
+?"padding"
+:"height"
+}
+>
+
+<FlatList
+
+style={styles.container}
+
+ListHeaderComponent={
+
+<View>
+
+<View
+style={styles.header}
+>
+
+<Text
+style={styles.subtitle}
+>
+
+Novo orçamento
+
+</Text>
+
+<TouchableOpacity
+style={styles.logout}
+onPress={onLogout}
+>
+
+<Text style={styles.btnText}>
+SAIR
+</Text>
+
+</TouchableOpacity>
+
+</View>
+
+
+
+<TextInput
+style={styles.input}
+placeholder="Quantidade"
+keyboardType="numeric"
+value={qtd}
+onChangeText={setQtd}
+/>
+
+
+<TextInput
+style={styles.input}
+placeholder="Preço Unitário"
+keyboardType="numeric"
+value={preco}
+onChangeText={setPreco}
+/>
+
+
+<TextInput
+style={styles.input}
+placeholder="Tamanho"
+value={tamanho}
+onChangeText={setTamanho}
+/>
+
+
+<TextInput
+style={styles.input}
+placeholder="Material"
+value={material}
+onChangeText={setMaterial}
+/>
+
+
+<TextInput
+style={styles.input}
+placeholder="Tipo impressão"
+value={impressao}
+onChangeText={setImpressao}
+/>
+
+
+<TextInput
+style={styles.input}
+placeholder="Observações"
+multiline
+value={obs}
+onChangeText={setObs}
+/>
+
+
+<Text style={styles.total}>
+R$ {total}
+</Text>
+
+
+<TouchableOpacity
+style={styles.button}
+onPress={salvar}
+>
+
+<Text style={styles.btnText}>
+SALVAR
+</Text>
+
+</TouchableOpacity>
+
+</View>
+
+}
+
+data={list}
+
+contentContainerStyle={{
+padding:
+width<400
+?15
+:20,
+
+paddingBottom:50
+}}
+
+keyExtractor={i=>
+i.id.toString()
+}
+
+renderItem={({item})=>(
+
+<View style={styles.card}>
+
+<Text style={styles.valor}>
+R$ {item.total}
+</Text>
+
+<Text>
+Quantidade:
+{item.quantidade}
+</Text>
+
+<Text>
+Preço:
+R$ {item.precoUnitario}
+</Text>
+
+<Text>
+Tamanho:
+{item.tamanho}
+</Text>
+
+<Text>
+Material:
+{item.material}
+</Text>
+
+<Text>
+Impressão:
+{item.impressao}
+</Text>
+
+<Text>
+Obs:
+{item.obs}
+</Text>
+
+
+<TouchableOpacity
+style={styles.wpp}
+onPress={()=>
+whatsapp(item)
+}
+>
+
+<Text style={styles.btnText}>
+Enviar WhatsApp
+</Text>
+
+</TouchableOpacity>
+
+
+<TouchableOpacity
+
+style={styles.delete}
+
+onPress={()=>
+
+Alert.alert(
+"Excluir",
+"Deseja remover?",
+[
+{
+text:"Cancelar"
+},
+{
+text:"Remover",
+onPress:()=>
+remover(item.id)
+}
+]
+)
+
+}
+
+>
+
+<Text style={styles.btnText}>
+Remover orçamento
+</Text>
+
+</TouchableOpacity>
+
+</View>
+
+)}
+
+keyboardShouldPersistTaps="handled"
+
+/>
+
+</KeyboardAvoidingView>
+
+)
+
+}
+
+
+// ================= APP =================
 
 export default function App(){
-const[user,setUser]=useState(null)
-const[loading,setLoading]=useState(true)
-const[tela,setTela]=useState('home')
-useEffect(()=>{(async()=>{await initDB();const u=await AuthService.restore();if(u)setUser(u);setLoading(false)})()},[])
-if(loading)return <SafeAreaView style={styles.center}><ActivityIndicator/></SafeAreaView>
-if(!user)return <LoginScreen onLogin={setUser}/>
-if(tela==='feedback') return <FeedbackScreen user={user} voltar={()=>setTela('home')}/>
-return <Home user={user} abrirFeedback={()=>setTela('feedback')} logout={async()=>{await AuthService.logout();setUser(null)}}/>
+
+const[
+screen,
+setScreen
+]=useState(
+"login"
+);
+
+return(
+
+<SafeAreaView
+style={styles.flex}
+>
+
+{
+screen==="login"
+
+?
+
+<LoginScreen
+onLogin={()=>
+setScreen(
+"home"
+)
+}
+/>
+
+:
+
+<Home
+onLogout={()=>
+setScreen(
+"login"
+)
+}
+/>
+
 }
 
-const styles=StyleSheet.create({container:{flex:1,backgroundColor:'#C97B2A'},center:{flexGrow:1,justifyContent:'center',padding:20},title:{fontSize:32,color:'#fff',fontWeight:'bold',textAlign:'center',marginBottom:30},input:{backgroundColor:'#fff',padding:15,borderRadius:10,marginBottom:10},button:{backgroundColor:'#007AFF',padding:15,borderRadius:10,marginTop:10},buttonText:{color:'#fff',fontWeight:'bold',textAlign:'center'},link:{color:'#fff',textAlign:'center',marginTop:20},header:{padding:20,flexDirection:'row',justifyContent:'space-between'},email:{color:'#fff',fontWeight:'bold'},logout:{backgroundColor:'red',padding:10,borderRadius:10},total:{color:'#fff',fontSize:24,fontWeight:'bold',marginVertical:20},card:{backgroundColor:'#fff',padding:15,margin:10,borderRadius:10,flexDirection:'row',justifyContent:'space-between'},valor:{fontWeight:'bold',fontSize:20},delete:{backgroundColor:'red',width:35,height:35,borderRadius:18,justifyContent:'center',alignItems:'center'},feedbackInput:{backgroundColor:'#fff',minHeight:150,padding:15,borderRadius:10}})
+</SafeAreaView>
 
-                                                                      
+)
+
+}
+
+
+// ================= STYLES =================
+
+const styles=StyleSheet.create({
+
+flex:{
+flex:1
+},
+
+container:{
+flex:1,
+backgroundColor:"#C97B2A"
+},
+
+title:{
+fontSize:32,
+fontWeight:"bold",
+color:"#fff",
+textAlign:"center",
+marginBottom:30
+},
+
+subtitle:{
+fontSize:25,
+fontWeight:"bold",
+color:"#fff"
+},
+
+header:{
+flexDirection:"row",
+justifyContent:"space-between",
+alignItems:"center",
+marginBottom:20
+},
+
+input:{
+backgroundColor:"#fff",
+padding:14,
+borderRadius:10,
+marginBottom:10,
+fontSize:16
+},
+
+button:{
+backgroundColor:"#007AFF",
+padding:15,
+borderRadius:10,
+alignItems:"center",
+marginTop:5
+},
+
+btnText:{
+color:"#fff",
+fontWeight:"bold",
+fontSize:15
+},
+
+link:{
+marginTop:20,
+textAlign:"center",
+color:"#fff",
+fontSize:16
+},
+
+logout:{
+backgroundColor:"#ff3b30",
+paddingHorizontal:15,
+paddingVertical:10,
+borderRadius:10
+},
+
+total:{
+fontSize:28,
+fontWeight:"bold",
+textAlign:"center",
+color:"#fff",
+marginVertical:20
+},
+
+card:{
+backgroundColor:"#fff",
+padding:15,
+borderRadius:12,
+marginTop:15
+},
+
+valor:{
+fontSize:24,
+fontWeight:"bold",
+marginBottom:10
+},
+
+wpp:{
+backgroundColor:"#25D366",
+padding:12,
+borderRadius:8,
+alignItems:"center",
+marginTop:15
+},
+
+delete:{
+backgroundColor:"#ff3b30",
+padding:12,
+borderRadius:8,
+alignItems:"center",
+marginTop:10
+}
+
+});
